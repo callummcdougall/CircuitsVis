@@ -50,13 +50,11 @@ def from_cache(
     assert not(cache.has_batch_dim), "Only supports batch dim = 1 (otherwise things get too big and messy!)"
     seq_len = len(tokens)
 
-    match seq_pos:
-        case None:
-            seq_pos = list(range(seq_len))
-        case int():
-            seq_pos = [seq_pos]
-        case _:
-            assert isinstance(seq_pos, list) and all(isinstance(i, int) for i in seq_pos), "seq_pos must be None, int, or list of ints"
+    if seq_pos is None:
+        seq_pos = list(range(seq_len))
+    elif isinstance(seq_pos, int):
+        seq_pos = [seq_pos]
+    assert isinstance(seq_pos, list) and all(isinstance(i, int) for i in seq_pos), "seq_pos must be None, int, or list of ints"
 
     # ! Get MLP & other decomps
     embed_results: Float[Tensor, "2 seqQ d_model"] = t.stack([
@@ -123,22 +121,22 @@ def from_cache(
         if resid_directions.ndim == 1:
             resid_directions = einops.repeat(resid_directions, "d -> seqQ d", seqQ=len(seq_pos))
         assert (resid_directions.ndim == 2) and (resid_directions.size(0) <= seq_len)
-        match resid_directions.size(1):
-            case model.cfg.d_model:
-                b_U_attribution = None
-            case model.cfg.d_vocab:
-                # In this case, we need bias attribution, and we need to redefine resid directions
-                b_U_attribution: Float[Tensor, "1 seqQ seqK"] = t.zeros(1, len(seq_pos), seq_len, device=model.b_U.device)
-                b_U_attribution[:, :, seq_pos] = einops.einsum(
-                    model.b_U, resid_directions,
-                    "d_vocab, seqQ d_vocab -> seqQ"
-                )
-                resid_directions = einops.einsum(
-                    model.W_U, resid_directions,
-                    "d_model d_vocab, seq d_vocab -> seq d_model"
-                )
-            case _:
-                raise ValueError(f"resid_directions must have shape (*seq_len, d_model) or (*seq_len, d_vocab), but the last dimension doesn't match. Shape is {resid_directions.shape}")
+
+        if resid_directions.size(1) == model.cfg.d_model:
+            b_U_attribution = None
+        elif resid_directions.size(1) == model.cfg.d_vocab:
+            # In this case, we need bias attribution, and we need to redefine resid directions
+            b_U_attribution: Float[Tensor, "1 seqQ seqK"] = t.zeros(1, len(seq_pos), seq_len, device=model.b_U.device)
+            b_U_attribution[:, :, seq_pos] = einops.einsum(
+                model.b_U, resid_directions,
+                "d_vocab, seqQ d_vocab -> seqQ"
+            )
+            resid_directions = einops.einsum(
+                model.W_U, resid_directions,
+                "d_model d_vocab, seq d_vocab -> seq d_model"
+            )
+        else:
+            raise ValueError(f"resid_directions must have shape (*seq_len, d_model) or (*seq_len, d_vocab), but the last dimension doesn't match. Shape is {resid_directions.shape}")
 
     full_attribution = einops.einsum(
         full_decomp, resid_directions,

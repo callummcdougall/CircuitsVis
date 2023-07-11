@@ -187,16 +187,18 @@ def get_weighted_attention(
         # In this case, we're taking the W_O's from a list of (layer, head) tuples
         layers, heads = zip(*layers_and_heads)
 
-    match attention_type:
-        case "value-weighted":
-            v_norms: Float[Tensor, "*batch head seq_K"] = v.norm(dim=-1)
-            v_norms_rescaled = v_norms / einops.reduce(v_norms, "... head seq_K -> ... head 1", "max")
-            pattern *= einops.repeat(v_norms_rescaled, "... head seq_K -> ... head 1 seq_K")
-        case "info-weighted":
-            info = einops.einsum(v, model.W_O[layers, heads], "... head seq_K d_head, head d_head d_model -> ... head seq_K d_model")
-            info_norms: Float[Tensor, "*batch head seq_K"] = info.norm(dim=-1)
-            info_norms_rescaled = info_norms / einops.reduce(info_norms, "... head seq_K -> ... head 1", "max")
-            pattern *= einops.repeat(info_norms_rescaled, "... head seq_K -> ... head 1 seq_K")
+    # match attention_type:
+    #     case "value-weighted":
+
+    if attention_type == "value-weighted":
+        v_norms: Float[Tensor, "*batch head seq_K"] = v.norm(dim=-1)
+        v_norms_rescaled = v_norms / einops.reduce(v_norms, "... head seq_K -> ... head 1", "max")
+        pattern *= einops.repeat(v_norms_rescaled, "... head seq_K -> ... head 1 seq_K")
+    elif attention_type == "info-weighted":
+        info = einops.einsum(v, model.W_O[layers, heads], "... head seq_K d_head, head d_head d_model -> ... head seq_K d_model")
+        info_norms: Float[Tensor, "*batch head seq_K"] = info.norm(dim=-1)
+        info_norms_rescaled = info_norms / einops.reduce(info_norms, "... head seq_K -> ... head 1", "max")
+        pattern *= einops.repeat(info_norms_rescaled, "... head seq_K -> ... head 1 seq_K")
 
     return pattern
 
@@ -285,13 +287,15 @@ def from_cache(
 
     # Make sure all the appropriate activations are in the cache
     # First we need to get all the layers we'll be using
-    match (heads, layers):
-        case (None, None):
+    # match (heads, layers):
+    #     case (None, None):
+    #     case (None, _):
+    
+    if (heads is None) and (layers is None):
             layers_needed = list(range(cache.model.cfg.n_layers))
-        case (None, _):
             assert isinstance(layers, int) or isinstance(layers, list), "layers must be an int or list"
             layers_needed = layers if isinstance(layers, list) else [layers]
-        case (_, None):
+    elif (heads is not None) and (layers is None):
             assert isinstance(heads, tuple) or isinstance(heads, list), "heads must be a tuple or list, e.g. [(10, 7), (11, 10)]"
             layers_needed = list(set([layer for (layer, head_idx) in heads]))
     # Second, we need to figure out what activations we'll need
@@ -311,10 +315,14 @@ def from_cache(
         will_have_nontrivial_batch_dim = True
         # has nontrivial = function of the cache. will have nontrivial = the thing we get after indexing (e.g. this is False if we index to a single sequence)
         assert isinstance(tokens[0], list), "For a cache with nontrivial batch size, tokens must be a list of lists of strings"
-        match batch_idx:
-            case int(): tokens = tokens[batch_idx]; will_have_nontrivial_batch_dim = False
-            case list(): tokens = [tokens[i] for i in batch_idx]
-            case None: batch_idx = list(range(len(tokens)))
+        # match batch_idx:
+        #     case int():
+        if isinstance(batch_idx, int):
+            tokens = tokens[batch_idx]; will_have_nontrivial_batch_dim = False
+        elif isinstance(batch_idx, list):
+            tokens = [tokens[i] for i in batch_idx]
+        elif batch_idx is None:
+            batch_idx = list(range(len(tokens)))
     else:
         will_have_nontrivial_batch_dim = False
         assert isinstance(tokens[0], str), "For a cache with trivial batch size, tokens must be a list of strings"
