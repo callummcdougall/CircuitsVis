@@ -293,8 +293,6 @@ def from_cache(
     
     if (heads is None) and (layers is None):
             layers_needed = list(range(cache.model.cfg.n_layers))
-            assert isinstance(layers, int) or isinstance(layers, list), "layers must be an int or list"
-            layers_needed = layers if isinstance(layers, list) else [layers]
     elif (heads is not None) and (layers is None):
             assert isinstance(heads, tuple) or isinstance(heads, list), "heads must be a tuple or list, e.g. [(10, 7), (11, 10)]"
             layers_needed = list(set([layer for (layer, head_idx) in heads]))
