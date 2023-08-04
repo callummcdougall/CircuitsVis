@@ -10,7 +10,7 @@ import circuitsvis.topk_tokens as topk_tokens
 import circuitsvis.logits as logits
 
 # __version__ = version("circuitsvis")
-__version__ = "1.40.0"
+__version__ = "1.40.1"
 
 __all__ = [
     "activations",
