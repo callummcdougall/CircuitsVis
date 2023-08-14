@@ -221,6 +221,7 @@ def from_cache(
     help: bool = False,
     title: Optional[str] = None,
     display_mode: Literal["dark", "light"] = "dark",
+    head_notation: Literal["dot", "LH"] = "dot",
 ):
     '''
     Arguments:
@@ -267,12 +268,15 @@ def from_cache(
         display_mode
             Can be dark or light. This only affects `mode="lines"`, because this one's dark mode is hard to see when
             you're in light mode (as opposed to "small" or "large" modes, which work in both color schemes).
+        head_notation
+            Determines whether to use "10.7" or "L10H7" notation for the heads.
     '''
 
     # Check arguments
     assert mode in ["large", "small", "lines"], "mode must be one of 'large', 'small' or 'lines'"
     assert attention_type in ["standard", "value-weighted", "info-weighted"], "attention_type must be one of 'standard', 'value-weighted' or 'info-weighted'"
     assert return_mode in ["html", "browser", "view"], "return_mode must be one of 'html', 'browser' or 'view'"
+    assert head_notation in ["dot", "LH"]
     assert isinstance(tokens, list), "tokens must be a list of strings (or a list of lists of strings, if batch size is nontrivial). Use `model.to_str_tokens`."
     assert (layers is None) or (heads is None), "Can only specify layers or heads, not both."
     if heads is not None:
@@ -330,6 +334,8 @@ def from_cache(
         assert isinstance(tokens[0], str), "For a cache with trivial batch size, tokens must be a list of strings"
         assert batch_idx is None, "Can't specify batch index if cache doesn't have batch dim"
 
+    # Determines how head names are displayed
+    head_name_fn = lambda layer, head: f"{layer}.{head}" if (head_notation == "dot") else f"L{layer}H{head}"
 
     if mode == "lines":
         # Check we don't have a batch dim (lines doesn't support this, too much hassle and I don't expect there to be good use cases)
@@ -359,6 +365,7 @@ def from_cache(
             layers_needed = layers_needed,
             heads = heads,
             display_mode = display_mode,
+            head_name_fn = head_name_fn,
         )
 
     else:
@@ -382,6 +389,8 @@ def from_cache(
             ], dim=-3)
         pattern_all = get_weighted_attention(pattern_all, model, attention_type, heads, v_all)
 
+        
+
         # Split depending on whether we have a batch dimension
         if will_have_nontrivial_batch_dim:
             html = make_multiple_choice_from_attention_patterns(
@@ -390,13 +399,13 @@ def from_cache(
                 radioitems = radioitems,
                 batch_labels = batch_labels,
                 mode = mode,
-                attention_head_names = [f"{L}.{H}" for L, H in heads],
+                attention_head_names = [head_name_fn(L, H) for L, H in heads],
             )
         else:
             html = (attention_heads if (mode == "large") else attention_patterns)(
                 attention = pattern_all[..., :len(tokens), :len(tokens)],
                 tokens = tokens,
-                attention_head_names = [f"{L}.{H}" for L, H in heads],
+                attention_head_names = [head_name_fn(L, H) for L, H in heads],
             )
     
     help_data = ""
@@ -562,6 +571,7 @@ def attn_lines(
     layers_needed: Optional[List[int]] = None,
     heads: Optional[List[Tuple[int, int]]] = None,
     display_mode: Literal["dark", "light"] = "dark",
+    head_name_fn: Literal["dot", "LH"] = "dot",
 ):
     '''
     If head_list is not None, then there's a list of possible (layer, head) combinations.
@@ -577,7 +587,7 @@ def attn_lines(
     else:
         head_options = """<span class="dropdown-label">Head: </span> <select id="layer_and_head">{}</select>""".format(
             "".join([
-                f"""<option value="({layer},{head})">{layer}.{head}</option>"""
+                f"""<option value="({layer},{head})">{head_name_fn(layer, head)}</option>"""
                 for layer, head in heads
             ])
         )
