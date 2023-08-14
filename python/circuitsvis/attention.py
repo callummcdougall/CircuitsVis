@@ -13,8 +13,8 @@ from pathlib import Path
 from jaxtyping import Float
 from collections import defaultdict
 from IPython.display import display, HTML, Javascript
-from typing import List, Optional, Union, Tuple, Literal
 from circuitsvis.utils.render import RenderedHTML, render
+from typing import List, Optional, Union, Tuple, Literal, Callable, cast
 from transformer_lens import ActivationCache, utils, HookedTransformer, HookedTransformerConfig
 
 
@@ -205,9 +205,6 @@ def get_weighted_attention(
 
 
 
-# * TODO - create an "attribution" function, which shows the small attention plot, but the interpretation of the colors for head H is 'what is the direct
-# * effect of head H on the output of the model, in the direction of the correct token'.
-
 
 
 def from_cache(
@@ -219,6 +216,7 @@ def from_cache(
     attention_type: Literal["standard", "value-weighted", "info-weighted"] = "standard",
     mode: Literal["large", "small", "lines"] = "small",
     radioitems: bool = False,
+    batch_labels: Optional[Union[List[str], Callable]] = None,
     return_mode: Literal["html", "browser", "view"] = "html",
     help: bool = False,
     title: Optional[str] = None,
@@ -258,6 +256,9 @@ def from_cache(
             below for examples of all). 
         radioitems
             If True, you select the sequence in the batch using radioitems rather than a dropdown. Defaults to False.
+        batch_labels
+            If given (as a list of strings or a function mapping (batch_idx, tokens[batch_idx]) -> string), this overrides
+            the values shown in the dropdown / radioitems. Defaults to None.
         open_in_browser
             If True, the plot will be opened in your browser. Defaults to False (so it returns an html object, which 
             can be displayed in a notebook, or using the `display` function from `IPython.display`).
@@ -279,30 +280,33 @@ def from_cache(
         assert isinstance(heads, list) and isinstance(heads[0][0], int), "heads must be a 2-tuple of (layer, head_idx) or list of 2-tuples, e.g. [(10, 7), (11, 10)]"
 
 
+    # Define useful things (and cast them to the right type, for VSCode typechecker)
+    model = cast(HookedTransformer, cache.model)
+    cfg = cast(HookedTransformerConfig, model.cfg)
 
-    # Define useful things
-    model: HookedTransformer = cache.model
-    cfg: HookedTransformerConfig = model.cfg
-
-
-    # Make sure all the appropriate activations are in the cache
-    # First we need to get all the layers we'll be using
-    # match (heads, layers):
-    #     case (None, None):
-    #     case (None, _):
     
+    # First, we need to figure out what layers we'll need (and we also replace any negatives with the appropriate positive value)
     if (heads is None) and (layers is None):
-            layers_needed = list(range(cache.model.cfg.n_layers))
+        layers_needed = list(range(cfg.n_layers))
     elif (heads is not None) and (layers is None):
-            assert isinstance(heads, tuple) or isinstance(heads, list), "heads must be a tuple or list, e.g. [(10, 7), (11, 10)]"
-            layers_needed = list(set([layer for (layer, head_idx) in heads]))
+        assert isinstance(heads, tuple) or isinstance(heads, list), "heads must be a tuple or list, e.g. [(10, 7), (11, 10)]"
+        layers_needed = list(set([layer for (layer, head_idx) in heads]))
+        heads = [heads] if isinstance(heads[0], int) else heads
+        heads = [(layer % cfg.n_layers, head_idx) for (layer, head_idx) in heads]
+    elif (heads is None) and (layers is not None):
+        assert isinstance(layers, int) or isinstance(layers, list), "layers must be an int or list, e.g. [10, 11]"
+        layers = [layers] if isinstance(layers, int) else layers
+        layers = [layer % cfg.n_layers for layer in layers]
+        layers_needed = list(set(layers))
+    else:
+        raise ValueError("Can only specify layers or heads, not both.")
     # Second, we need to figure out what activations we'll need
     components_needed = ["pattern"]
     if attention_type in ["value-weighted", "info-weighted"]:
         components_needed.append("v")
     if mode == "lines":
         components_needed.extend(["q", "k"])
-    # Finally, we check that they're in the cache, which will help make code shorter later on)
+    # Finally, we check that all these activations for all layers are in the cache
     for (layer, component) in itertools.product(layers_needed, components_needed):
         assert utils.get_act_name(component, layer) in cache, f"cache must contain component {component!r} for layer {layer}"
         has_nontrivial_batch_dim = (cache["pattern", layer].ndim == 4) and (cache["pattern", layer].shape[0] > 1)
@@ -384,6 +388,7 @@ def from_cache(
                 attn_list = [attn[..., :i, :i] for i, attn in zip(map(len, tokens), pattern_all)],
                 tokens_list = tokens,
                 radioitems = radioitems,
+                batch_labels = batch_labels,
                 mode = mode,
                 attention_head_names = [f"{L}.{H}" for L, H in heads],
             )
@@ -434,21 +439,20 @@ def from_cache(
 
 
 def generate_select(labels, radioitems):
-    _labels = ["".join(label) for label in labels]
     if radioitems:
         return "\n        ".join([
         f"""<div>
             <input type="radio" id="set{i}" name="tokens" value="set{i}" onclick="changeTokens(this.value)">
             <label for="set{i}">{label}</label>
         </div>"""
-        for i, label in enumerate(_labels, 1)
+        for i, label in enumerate(labels, 1)
     ])
     else:
         return "\n        ".join([
         """<select id="tokens" onchange="changeTokens(this.value)">""",
         *[
             f"""<option id="set{i}" value="set{i}">{label}</option>"""
-            for i, label in enumerate(_labels, 1)
+            for i, label in enumerate(labels, 1)
         ],
         "</select>"
     ])
@@ -478,14 +482,14 @@ multiple_choice_string = """<!DOCTYPE html>
 <body>
 
     <form>
-        <label>Choose a token set:</label>
+        <label>Choose a sequence:</label>
         [SELECT]
     </form>
 
     <div id="circuits-vis-[SEED1]-[SEED2]" style="margin: 15px 0;"></div>
     
     <script crossorigin type="module">
-        import { render, AttentionPatterns } from "https://unpkg.com/circuitsvis@1.39.1/dist/cdn/esm.js";
+        import { render, AttentionPatterns } from "https://unpkg.com/circuitsvis@1.40.1/dist/cdn/esm.js";
         
         [OPTIONS]
 
@@ -507,14 +511,22 @@ def make_multiple_choice_from_attention_patterns(
     tokens_list: List[List[str]],
     attention_head_names: Optional[List[str]] = None,
     radioitems: bool = True,
+    batch_labels: Optional[Union[List[str], Callable]] = None,
     mode: Literal["large", "small"] = "large",
-    return_type: Literal["view", "html"] = "html"
+    return_type: Literal["view", "html"] = "html",
 ):
     assert attention_head_names is not None
     assert len(attention_head_names) == len(attn_list[0])
 
+    if batch_labels is None:
+        labels = ["".join(str_toks) for str_toks in tokens_list]
+    elif isinstance(batch_labels, list):
+        labels = batch_labels
+    else:
+        labels = list(map(batch_labels, tokens_list))
+
     html_str = (multiple_choice_string
-        .replace("[SELECT]", generate_select(tokens_list, radioitems=radioitems))
+        .replace("[SELECT]", generate_select(labels, radioitems=radioitems))
         .replace("[OPTIONS]", generate_options(len(tokens_list)))
         .replace("[SEED1]", f"{generate_hex_string()}")
         .replace("[SEED2]", f"{random.randint(0, 9999):04}")

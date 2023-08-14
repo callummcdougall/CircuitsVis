@@ -34,6 +34,7 @@ def from_cache(
     tokens: Union[List[str], Float[Tensor, "seq"]],
     resid_directions: Optional[Union[Float[Tensor, "*seq d_model"], Float[Tensor, "*seq d_vocab"]]] = None,
     seq_pos: Optional[Union[int, List[int]]] = None,
+    layers: Optional[Union[int, List[int]]] = None,
     mode: Literal["large", "small"] = "small",
     include_b_U_attribution: bool = False, # This always points towards more common tokens I guess, so it does a lot of the heavy lifting for us (when we aren't using a baseline). Interesting!
 ):
@@ -56,28 +57,35 @@ def from_cache(
         seq_pos = [seq_pos]
     assert isinstance(seq_pos, list) and all(isinstance(i, int) for i in seq_pos), "seq_pos must be None, int, or list of ints"
 
+    # Get the layers we'll be using
+    if layers is None:
+        layers = list(range(model.cfg.n_layers))
+    elif isinstance(layers, int):
+        layers = [layers]
+    layers = [layer % model.cfg.n_layers for layer in layers]
+
     # ! Get MLP & other decomps
     embed_results: Float[Tensor, "2 seqQ d_model"] = t.stack([
         cache["embed"], cache["pos_embed"]
     ]) / cache["scale"]
     embed_results: Float[Tensor, "2 seqQ seqK d_model"] = diagonalise(embed_results, dim=1)[:, seq_pos]
     mlp_results: Float[Tensor, "layer seqQ d_model"] = t.stack([
-        cache["mlp_out", layer] for layer in range(model.cfg.n_layers)
+        cache["mlp_out", layer] for layer in layers
     ]) / cache["scale"]
     mlp_results: Float[Tensor, "layer seqQ seqK d_model"] = diagonalise(mlp_results, dim=1)[:, seq_pos]
-    mlp_labels = [f"MLP{i}" for i in range(model.cfg.n_layers)]
+    mlp_labels = [f"MLP{layer}" for layer in layers]
 
     # ! Get attention biases
     attn_biases: Float[Tensor, "layer seqQ seqK d_model"] = diagonalise(
-        einops.repeat(model.b_O, "layer d_model -> layer seqQ d_model", seqQ=seq_len), dim=1
+        einops.repeat(model.b_O[layers], "layer d_model -> layer seqQ d_model", seqQ=seq_len), dim=1
     )[:, seq_pos] / cache["scale"][seq_pos]
-    attn_bias_labels = [f"Attn bias [{i}]" for i in range(model.cfg.n_layers)]
+    attn_bias_labels = [f"Attn bias [{layer}]" for layer in layers]
 
     # ! Get attention decomposition (this is harder because we have to decompose by source position)
     attn_results = []
     attn_labels = []
     # TODO - could save memory if I didn't have things with `d_model` dimension much; I multiply along this straight away not @ end
-    for layer in range(model.cfg.n_layers):
+    for layer in layers:
         pattern: Float[Tensor, "nheads seqQ seqK"] = cache["pattern", layer][:, seq_pos]
         v: Float[Tensor, "seqK nheads d_head"] = cache["v", layer]
         v_post: Float[Tensor, "seqK nheads d_model"] = einops.einsum(
