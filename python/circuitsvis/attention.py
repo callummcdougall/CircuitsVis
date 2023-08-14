@@ -434,8 +434,6 @@ def from_cache(
         return HTML(help_data + title_data + data)
     elif return_mode == "view":
         display(HTML(help_data + title_data + data))
-    else:
-        raise ValueError(f"Unrecognized return_mode {return_mode}.")
 
 
 
@@ -522,7 +520,7 @@ def make_multiple_choice_from_attention_patterns(
     radioitems: bool = True,
     batch_labels: Optional[Union[List[str], Callable]] = None,
     mode: Literal["large", "small"] = "large",
-    return_type: Literal["view", "html"] = "html",
+    return_mode: Literal["view", "html"] = "html",
 ):
     assert attention_head_names is not None
     assert len(attention_head_names) == len(attn_list[0])
@@ -555,7 +553,7 @@ def make_multiple_choice_from_attention_patterns(
 
     html_str = html_str.replace("<|endoftext|>", "")
 
-    if return_type == "view":
+    if return_mode == "view":
         return display(HTML(html_str))
     else:
         return HTML(html_str)

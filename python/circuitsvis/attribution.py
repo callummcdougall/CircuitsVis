@@ -4,6 +4,10 @@ import torch as t
 from torch import Tensor
 from transformer_lens import HookedTransformer, ActivationCache
 import einops
+from pathlib import Path
+import webbrowser
+from IPython.display import display, HTML
+
 from circuitsvis.attention import attention_heads, attention_patterns
 
 
@@ -35,7 +39,10 @@ def from_cache(
     resid_directions: Optional[Union[Float[Tensor, "*seq d_model"], Float[Tensor, "*seq d_vocab"]]] = None,
     seq_pos: Optional[Union[int, List[int]]] = None,
     layers: Optional[Union[int, List[int]]] = None,
+    heads: Optional[Union[Tuple[int, int], List[Tuple[int, int]]]] = None,
     mode: Literal["large", "small"] = "small",
+    return_mode: Literal["html", "browser", "view"] = "html",
+    head_notation: Literal["dot", "LH"] = "dot",
     include_b_U_attribution: bool = False, # This always points towards more common tokens I guess, so it does a lot of the heavy lifting for us (when we aren't using a baseline). Interesting!
 ):
     '''
@@ -49,6 +56,7 @@ def from_cache(
     '''
     t.cuda.empty_cache()
     assert not(cache.has_batch_dim), "Only supports batch dim = 1 (otherwise things get too big and messy!)"
+    assert return_mode in ["html", "browser", "view"], "return_mode must be one of 'html', 'browser' or 'view'"
     seq_len = len(tokens)
 
     if seq_pos is None:
@@ -57,12 +65,20 @@ def from_cache(
         seq_pos = [seq_pos]
     assert isinstance(seq_pos, list) and all(isinstance(i, int) for i in seq_pos), "seq_pos must be None, int, or list of ints"
 
-    # Get the layers we'll be using
-    if layers is None:
+    # Get the layers we'll be using (or the heads we'll be using)
+    if (layers is None) and (heads is None):
         layers = list(range(model.cfg.n_layers))
-    elif isinstance(layers, int):
-        layers = [layers]
-    layers = [layer % model.cfg.n_layers for layer in layers]
+        heads = [(layer, head) for layer in layers for head in range(model.cfg.n_heads)]
+    elif (layers is None) and (heads is not None):
+        heads = [heads] if isinstance(heads[0], int) else heads
+        heads = [(layer % model.cfg.n_layers, head % model.cfg.n_heads) for layer, head in heads]
+        layers = sorted(set(layer for layer, head in heads))
+    elif (layers is not None) and (heads is None):
+        layers = [layers] if isinstance(layers, int) else layers
+        layers = [layer % model.cfg.n_layers for layer in layers]
+        heads = [(layer, head) for layer in layers for head in range(model.cfg.n_heads)]
+    else:
+        raise ValueError("Can only specify layers or heads, not both.")
 
     # ! Get MLP & other decomps
     embed_results: Float[Tensor, "2 seqQ d_model"] = t.stack([
@@ -85,28 +101,28 @@ def from_cache(
     attn_results = []
     attn_labels = []
     # TODO - could save memory if I didn't have things with `d_model` dimension much; I multiply along this straight away not @ end
-    for layer in layers:
-        pattern: Float[Tensor, "nheads seqQ seqK"] = cache["pattern", layer][:, seq_pos]
-        v: Float[Tensor, "seqK nheads d_head"] = cache["v", layer]
-        v_post: Float[Tensor, "seqK nheads d_model"] = einops.einsum(
-            v, model.W_O[layer],
-            "seqK nheads d_head, nheads d_head d_model -> nheads seqK d_model",
+    for (layer, head) in heads:
+        pattern = cache["pattern", layer][head, seq_pos] # [seqQ seqK]
+        v = cache["v", layer][:, head] # [seqK d_head]
+        v_post = einops.einsum(
+            v, model.W_O[layer, head],
+            "seqK d_head, d_head d_model -> seqK d_model",
         )
-        results_pre: Float[Tensor, "nheads seqQ seqK d_model"] = einops.einsum(
+        results_pre = einops.einsum(
             v_post, pattern,
-            "nheads seqK d_model, nheads seqQ seqK -> nheads seqQ seqK d_model",
+            "seqK d_model, seqQ seqK -> seqQ seqK d_model",
         )
         # Apply final layernorm (needs to be by query position, not by key position)
-        results_pre /= einops.repeat(
+        results_pre = results_pre / einops.repeat(
             cache["scale"][seq_pos],
             "seqQ d_model -> seqQ seqK d_model", seqK=seq_len
         )
         attn_results.append(results_pre)
-        attn_labels.extend([f"{layer}.{head}" for head in range(model.cfg.n_heads)])
+        attn_labels.append(f"{layer}.{head}" if (head_notation == "dot") else f"L{layer}H{head}")
 
     labels = ["embed", "pos_embed"] + mlp_labels + attn_bias_labels + attn_labels
     full_decomp: Float[Tensor, "component seqQ seqK d_model"] = t.cat([
-        embed_results, mlp_results, attn_biases, t.cat(attn_results)
+        embed_results, mlp_results, attn_biases, t.stack(attn_results)
     ])
 
     # Get the residual stream directions
@@ -177,11 +193,35 @@ def from_cache(
             tokens = token_str,
             attention_head_names = labels,
         )
-        return html_pos, html_neg
+        html_dict = {"_pos": html_pos, "_neg": html_neg}
     else:
         html_all = attention_heads(
             attention = full_attribution_padded_scaled_positive - full_attribution_padded_scaled_negative,
             tokens = token_str,
             attention_head_names = labels,
         )
-        return html_all
+        html_dict = {"": html_all}
+    
+    # Get html as strings, in a list
+    html_str = [str(html_dict[""])] if (mode != "small") else [f"<h1>Positive attribution</h1>{str(html_dict['_pos'])}", f"<h1>Negative attribution</h1>{str(html_dict['_neg'])}"]
+
+    # Open in browser if required
+    if return_mode == "browser":
+        idx = 0
+        filename_end = ["_pos", "_neg"] if mode == "small" else [""]
+        while (Path.cwd() / f"attention{filename_end[0]}_{idx}.html").exists():
+            idx += 1
+        for end, html in zip(filename_end, html_str):
+            file_path = Path.cwd() / f"attention{end}_{idx}.html"
+            file_url = 'file://' + str(file_path.resolve())
+            with open(str(file_path), "w") as f:
+                f.write(html)
+            result = webbrowser.open(file_url)
+            if not result:
+                raise RuntimeError(f"Failed to open {file_url} in browser. However, the file was saved to {file_path}, so you can download it and open it manually.")
+    elif return_mode == "html":
+        html_list = [HTML(_html_str) for _html_str in html_str]
+        return html_list[0] if len(html_list) == 1 else html_list
+    else:
+        for _html_str in html_str:
+            display(HTML(_html_str))

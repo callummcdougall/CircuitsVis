@@ -185,7 +185,7 @@ def render_cdn(react_element_name: str, **kwargs: PythonProperty) -> str:
 
     html = f"""<div id="{uuid}" style="margin: 15px 0;"/>
     <script crossorigin type="module">
-    import {"{ render, "+ react_element_name + " }"} from "https://unpkg.com/circuitsvis@{circuitsvis.__version__}/dist/cdn/esm.js";
+    import {"{ render, "+ react_element_name + " }"} from "https://unpkg.com/circuitsvis@1.40.1/dist/cdn/esm.js";
     render(
       "{uuid}",
       {react_element_name},
