@@ -34,6 +34,7 @@ export function AttentionHeadsSelector({
   onMouseEnter,
   onMouseLeave,
   positiveColor,
+  maskUpperTri,
   tokens
 }: AttentionHeadsProps & {
   attentionHeadNames: string[];
@@ -89,6 +90,7 @@ export function AttentionHeadsSelector({
                   minValue={minValue}
                   negativeColor={negativeColor}
                   positiveColor={positiveColor}
+                  maskUpperTri={maskUpperTri}
                 />
               </div>
             </div>
@@ -112,6 +114,7 @@ export function AttentionHeads({
   minValue,
   negativeColor,
   positiveColor,
+  maskUpperTri = true,
   tokens
 }: AttentionHeadsProps) {
   // Attention head focussed state
@@ -137,23 +140,14 @@ export function AttentionHeads({
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
         positiveColor={positiveColor}
+        maskUpperTri={maskUpperTri}
         tokens={tokens}
       />
 
       <Row>
         <Col xs={12}>
           <h3 style={{ marginBottom: 10 }}>{headNames[focused]} Zoomed</h3>
-
-          <div
-            style={{
-              position: "relative",
-              // Set the maximum width such that a head with just a few tokens
-              // doesn't have crazy large boxes per token. Note this is the
-              // width of the full chart (including axis labels) so it also
-              // needs a sensible lowest maximum.
-              maxWidth: `${Math.max(Math.round(tokens.length * 2.4), 20)}em`
-            }}
-          >
+          <div>
             <h2
               style={{
                 position: "absolute",
@@ -174,6 +168,8 @@ export function AttentionHeads({
               minValue={minValue}
               negativeColor={negativeColor}
               positiveColor={positiveColor}
+              zoomed={true}
+              maskUpperTri={maskUpperTri}
               tokens={tokens}
             />
           </div>
@@ -249,6 +245,17 @@ export interface AttentionHeadsProps {
    * @example #0000ff
    */
   positiveColor?: string;
+
+  /**
+   * Mask upper triangular
+   *
+   * Whether or not to mask the upper triangular portion of the attention patterns.
+   *
+   * Should be true for causal attention, false for bidirectional attention.
+   *
+   * @default true
+   */
+  maskUpperTri?: boolean;
 
   /**
    * Show axis labels
