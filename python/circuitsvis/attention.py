@@ -26,7 +26,7 @@ def attention_heads(
     min_value: Optional[float] = None,
     negative_color: Optional[str] = None,
     positive_color: Optional[str] = None,
-    mask_upper_tri: bool = False,
+    mask_upper_tri: bool = True,
 ) -> RenderedHTML:
     """Attention Heads
 
@@ -108,7 +108,7 @@ def attention_pattern(
     negative_color: Optional[str] = None,
     show_axis_labels: Optional[bool] = None,
     positive_color: Optional[str] = None,
-    mask_upper_tri: bool = False,
+    mask_upper_tri: bool = True,
 ) -> RenderedHTML:
     """Attention Pattern
 
