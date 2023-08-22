@@ -506,7 +506,7 @@ multiple_choice_string = """<!DOCTYPE html>
     <div id="circuits-vis-[SEED1]-[SEED2]" style="margin: 15px 0;"></div>
     
     <script crossorigin type="module">
-        import { render, AttentionPatterns } from "https://unpkg.com/circuitsvis@1.40.1/dist/cdn/esm.js";
+        import { render, AttentionPatterns } from "https://unpkg.com/circuitsvis@1.41.0/dist/cdn/esm.js";
         
         [OPTIONS]
 
