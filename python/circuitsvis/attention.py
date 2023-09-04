@@ -11,6 +11,7 @@ import numpy as np
 from torch import Tensor
 from pathlib import Path
 from jaxtyping import Float
+from inspect import getfullargspec
 from collections import defaultdict
 from IPython.display import display, HTML, Javascript
 from circuitsvis.utils.render import RenderedHTML, render
@@ -214,6 +215,11 @@ def get_weighted_attention(
 
 
 
+def get_num_args(func: Callable):
+    spec = getfullargspec(func)
+    n_args = len(spec.args)
+    n_defaults = len(spec.defaults) if spec.defaults is not None else 0
+    return n_args - n_defaults
 
 
 
@@ -331,18 +337,20 @@ def from_cache(
         will_have_nontrivial_batch_dim = True
         # has nontrivial = function of the cache. will have nontrivial = the thing we get after indexing (e.g. this is False if we index to a single sequence)
         assert isinstance(tokens[0], list), "For a cache with nontrivial batch size, tokens must be a list of lists of strings"
-        # match batch_idx:
-        #     case int():
         if isinstance(batch_idx, int):
-            tokens = tokens[batch_idx]; will_have_nontrivial_batch_dim = False
+            tokens = tokens[batch_idx]
+            will_have_nontrivial_batch_dim = False
         elif isinstance(batch_idx, list):
             tokens = [tokens[i] for i in batch_idx]
         elif batch_idx is None:
             batch_idx = list(range(len(tokens)))
     else:
         will_have_nontrivial_batch_dim = False
-        assert isinstance(tokens[0], str), "For a cache with trivial batch size, tokens must be a list of strings"
+        assert isinstance(tokens[0], str), "For a cache with trivial batch size, tokens must be a list of strings (i.e. from a single sequence)"
         assert batch_idx is None, "Can't specify batch index if cache doesn't have batch dim"
+        # Need to make sure batch_idx is set to zero if the cache still has its batch dim of size 1
+        if cache.has_batch_dim:
+            batch_idx = 0
 
     # Determines how head names are displayed
     head_name_fn = lambda layer, head: f"{layer}.{head}" if (head_notation == "dot") else f"L{layer}H{head}"
@@ -540,7 +548,13 @@ def make_multiple_choice_from_attention_patterns(
     elif isinstance(batch_labels, list):
         labels = batch_labels
     else:
-        labels = list(map(batch_labels, tokens_list))
+        # In this case, `batch_labels` is a callable, either acting on (idx, tokens) or just tokens
+        num_args = get_num_args(batch_labels)
+        assert num_args in {1, 2}, "If `batch_labels` is callable, should either take one argument (str_toks) or two arguments (batch_idx, str_toks)."
+        if num_args == 1:
+            labels = [batch_labels(str_tok) for str_tok in tokens_list]
+        elif num_args == 2:
+            labels = [batch_labels(batch_idx, str_tok) for (batch_idx, str_tok) in enumerate(tokens_list)]
 
     html_str = (multiple_choice_string
         .replace("[SELECT]", generate_select(labels, radioitems=radioitems))
