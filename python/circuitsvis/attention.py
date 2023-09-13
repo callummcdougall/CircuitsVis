@@ -298,7 +298,8 @@ def from_cache(
     if heads is not None:
         if isinstance(heads, tuple): heads = [heads]
         assert isinstance(heads, list) and isinstance(heads[0][0], int), "heads must be a 2-tuple of (layer, head_idx) or list of 2-tuples, e.g. [(10, 7), (11, 10)]"
-
+    if isinstance(batch_labels, list) and (batch_idx is not None) and not(isinstance(batch_idx, int)):
+        batch_labels = [batch_labels[i] for i in batch_idx]
 
     # Define useful things (and cast them to the right type, for VSCode typechecker)
     model = cast(HookedTransformer, cache.model)
