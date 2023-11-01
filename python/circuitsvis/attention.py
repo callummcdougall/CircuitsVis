@@ -282,8 +282,7 @@ def from_values(
         tokens_ndim = 1
     
     ndim = (attention.ndim, tokens_ndim)
-    full_error_message = f"""
-`attention` and `tokens` shapes must be compatible. There are 4 valid combinations:
+    full_error_message = f"""`attention` and `tokens` shapes must be compatible. There are 4 valid combinations:
     (1) Single prompt, single head <=> attention is 2D, tokens is 1D
     (2) Single prompt, multiple heads <=> attention is 3D, tokens is 1D
     (3) Multiple prompts, single head <=> attention is 3D, tokens is 2D
