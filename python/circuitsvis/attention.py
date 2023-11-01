@@ -12,7 +12,6 @@ from torch import Tensor
 from pathlib import Path
 from jaxtyping import Float
 from inspect import getfullargspec
-from collections import defaultdict
 from IPython.display import display, HTML, Javascript
 from circuitsvis.utils.render import RenderedHTML, render
 from typing import List, Optional, Union, Tuple, Literal, Callable, cast
@@ -223,6 +222,154 @@ def get_num_args(func: Callable):
 
 
 
+
+def from_values(
+    attention: Union[t.Tensor, np.ndarray, list],
+    tokens: List[str],
+    mode: Literal["large", "small"] = "small",
+    radioitems: bool = False,
+    attention_head_names: Optional[List[str]] = None,
+    return_mode: Literal["html", "browser", "view"] = "html",
+    title: Optional[str] = None,
+):
+    '''
+    Plots attention from values rather than from cache. The only 2 essential arguments
+    are `attention` and `tokens`, the rest are optional.
+
+    All the arguments in this function are explained in the `from_cache` function, so 
+    refer to this for more details.
+
+    The `from_values` function is now preferred to the `attention.attention_heads` and
+    `attention.attention_patterns`, because it has more flexibility & intuitive arguments,
+    as well as better error-checking for arguments.
+
+    Arguments (which aren't in `from_cache`):
+        attention
+            This can be a 2D array (for a single head & batch), or a 3 or 4D array if
+            we also include multiple heads or a nontrivial batch.
+
+        tokens
+            Either a list of strings (if trivial batch dim), or a list of lists of strings.
+
+        attention_head_names
+            List of strings to label the heads with
+    '''
+
+    # ! First, check arguments (attention and tokens) are compatible. See the `full_error_message` to explain this.
+
+    if isinstance(attention, list):
+        attention = t.tensor(attention)
+    elif isinstance(attention, np.ndarray):
+        attention = t.from_numpy(attention)
+    else:
+        assert isinstance(attention, t.Tensor), "attention must be a list, numpy array or torch tensor"
+    attention = attention.cpu()
+
+    assert isinstance(tokens, list)
+    if isinstance(tokens[0], str):
+        tokens_ndim = 1
+    else:
+        assert isinstance(tokens[0], list), "tokens should be a list of strings (or list of lists of strings, if we're using batch size > 1)"
+        assert isinstance(tokens[0][0], str), "tokens should be a list of strings (or list of lists of strings, if we're using batch size > 1)"
+        tokens_ndim = 2
+
+    if (attention.ndim == 4) and (attention.shape[0] == 1):
+        print("You're using 4D attention with a batch dimension of size 1. We have removed the batch dimension for you.")
+        attention = attention.squeeze(0)
+    if (tokens_ndim == 2) and (len(tokens) == 1):
+        print("You're using 2D tokens with a batch dimension of size 1. We have removed the batch dimension for you.")
+        tokens = tokens[0]
+        tokens_ndim = 1
+    
+    ndim = (attention.ndim, tokens_ndim)
+    full_error_message = f"""
+`attention` and `tokens` shapes must be compatible. There are 4 valid combinations:
+    (1) Single prompt, single head <=> attention is 2D, tokens is 1D
+    (2) Single prompt, multiple heads <=> attention is 3D, tokens is 1D
+    (3) Multiple prompts, single head <=> attention is 3D, tokens is 2D
+    (4) Multiple prompts, multiple heads <=> attention is 4D, tokens is 2D
+
+But your inputs have: attention is {attention.ndim}D, tokens is {tokens_ndim}D"""
+    assert ndim in [(2, 1), (3, 1), (3, 2), (4, 2)], full_error_message
+
+
+    # ! Next, check more shapes: key/query dims matching, and seq_len & batch dim matching tokens
+    
+    has_nontrivial_batch_dim = (ndim in [(3, 2), (4, 2)])
+    has_nontrivial_head_dim = (ndim in [(3, 1), (4, 2)])
+
+    seq_len = len(tokens[0] if has_nontrivial_batch_dim else tokens)
+
+    if attention.ndim == 2:
+        batch_dim, head_dim = None, None
+    elif attention.ndim == 3:
+        batch_dim, head_dim = (0, None) if has_nontrivial_batch_dim else (None, 0)
+    elif attention.ndim == 4:
+        batch_dim, head_dim = 0, 1
+
+    # Check seq_len dimensions are valid
+    assert attention.shape[-1] == attention.shape[-2], "Attention must be square"
+    assert attention.shape[-1] == seq_len, "Attention must have same sequence length as tokens"
+
+    # Check batch dimensions are valid (if they exist)
+    if has_nontrivial_batch_dim:
+        assert attention.shape[batch_dim] == len(tokens), "Attention must have same batch size as tokens"
+        assert attention.shape[-1] >= max(len(seq) for seq in tokens), "No sequence in `tokens` can be longer than the attention pattern batch dim"
+    
+    # Check head dimensions are valid (if they exist), also set the head labels to a default thing
+    if has_nontrivial_head_dim and (attention_head_names is not None):
+        assert len(attention_head_names) == attention.shape[head_dim], "If you specify attention_head_names, you must give one for every head"
+    if attention_head_names is None:
+        attention_head_names = [""] if not(has_nontrivial_head_dim) else [f"Head {i+1}" for i in range(attention.shape[head_dim])]
+    
+
+    # ! Now all that's done, actually create the visualisation (this bit is similar to the end of the `from_cache` function)
+
+    # Add a dummy head dimension, if we don't already have one
+    if ndim == (2, 1):
+        attention = einops.repeat(attention, "seqQ seqK -> head seqQ seqK", head=1)
+    elif ndim == (3, 2):
+        attention = einops.repeat(attention, "batch seqQ seqK -> batch head seqQ seqK", head=1)
+
+    # Split depending on whether we have a batch dimension
+    if has_nontrivial_batch_dim:
+        html = make_multiple_choice_from_attention_patterns(
+            attn_list = [attn[..., :i, :i] for i, attn in zip(map(len, tokens), attention)],
+            tokens_list = tokens,
+            radioitems = radioitems,
+            batch_labels = None,
+            mode = mode,
+            attention_head_names = attention_head_names,
+        )
+    else:
+        html = (attention_heads if (mode == "large") else attention_patterns)(
+            attention = attention,
+            tokens = tokens,
+            attention_head_names = attention_head_names,
+        )
+
+    title_data = f"<h1>{title}</h1>" if title else ""
+    data = getattr(html, "data", str(html))
+
+    # Open in browser if required
+    if return_mode == "browser":
+        idx = 0
+        while (Path.cwd() / f"attention_{idx}.html").exists():
+            idx += 1
+        file_path = Path.cwd() / f"attention_{idx}.html"
+        file_url = 'file://' + str(file_path.resolve())
+        with open(str(file_path), "w") as f:
+            f.write(title_data + data)
+        result = webbrowser.open(file_url)
+        if not result:
+            raise RuntimeError(f"Failed to open {file_url} in browser. However, the file was saved to {file_path}, so you can download it and open it manually.")
+    elif return_mode == "html":
+        return HTML(title_data + data)
+    elif return_mode == "view":
+        display(HTML(title_data + data))
+
+
+
 def from_cache(
     cache: ActivationCache,
     tokens: Union[List[str], List[List[str]]],
@@ -298,8 +445,7 @@ def from_cache(
     if heads is not None:
         if isinstance(heads, tuple): heads = [heads]
         assert isinstance(heads, list) and isinstance(heads[0][0], int), "heads must be a 2-tuple of (layer, head_idx) or list of 2-tuples, e.g. [(10, 7), (11, 10)]"
-    if isinstance(batch_labels, list) and (batch_idx is not None) and not(isinstance(batch_idx, int)):
-        batch_labels = [batch_labels[i] for i in batch_idx]
+
 
     # Define useful things (and cast them to the right type, for VSCode typechecker)
     model = cast(HookedTransformer, cache.model)
@@ -412,6 +558,11 @@ def from_cache(
 
         # Split depending on whether we have a batch dimension
         if will_have_nontrivial_batch_dim:
+            
+            # ! Here is what I changed, probably hacky and should be temporary though
+            if isinstance(batch_labels, list):
+                batch_labels = [batch_labels[i] for i in batch_idx]
+
             html = make_multiple_choice_from_attention_patterns(
                 attn_list = [attn[..., :i, :i] for i, attn in zip(map(len, tokens), pattern_all)],
                 tokens_list = tokens,
@@ -658,4 +809,4 @@ def attn_lines(
 
 
 def format_special_chars(tokens):
-    return [t.replace('Ġ', ' ').replace('▁', ' ').replace('</w>', '') for t in tokens]
+    return [token.replace('Ġ', ' ').replace('▁', ' ').replace('</w>', '') for token in tokens]
